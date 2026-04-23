@@ -7,6 +7,7 @@ use soroban_sdk::{
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
+const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -51,6 +52,15 @@ impl SolarGridContract {
     }
 
     /// Register a new smart meter for an owner.
+    ///
+    /// # Access control
+    /// - Caller must be the contract admin.
+    /// - `owner` must be present in the admin-managed allowlist, ensuring only
+    ///   vetted user accounts (G… addresses) can be registered as meter owners.
+    ///   This prevents contract addresses from being registered as owners, which
+    ///   could cause downstream auth issues.
+    /// - `owner` must co-sign the registration (require_auth), confirming they
+    ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
         let key = DataKey::Meter(meter_id.clone());
@@ -85,6 +95,48 @@ impl SolarGridContract {
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Add an address to the meter-owner allowlist.
+    /// Only the admin may call this. Use this to pre-approve user accounts
+    /// (G… addresses) before they can be registered as meter owners.
+    pub fn allowlist_add(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let mut list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !list.contains(&owner) {
+            list.push_back(owner);
+            env.storage().instance().set(&ALLOWLIST, &list);
+        }
+    }
+
+    /// Remove an address from the meter-owner allowlist.
+    /// Only the admin may call this.
+    pub fn allowlist_remove(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for addr in list.iter() {
+            if addr != owner {
+                new_list.push_back(addr);
+            }
+        }
+        env.storage().instance().set(&ALLOWLIST, &new_list);
+    }
+
+    /// Returns the current allowlist.
+    pub fn get_allowlist(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Make a payment to top up a meter's balance and activate it.
@@ -177,6 +229,16 @@ mod tests {
         (env, client, admin)
     }
 
+    /// Helper: allowlist + register a meter in one call.
+    fn allowlist_and_register(
+        client: &SolarGridContractClient,
+        meter_id: &Symbol,
+        user: &Address,
+    ) {
+        client.allowlist_add(user);
+        client.register_meter(meter_id, user);
+    }
+
     #[test]
     fn test_register_and_pay() {
         let (env, client, _admin) = setup();
@@ -184,7 +246,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER1");
 
-        client.register_meter(&meter_id, &user);
+        allowlist_and_register(&client, &meter_id, &user);
 
         // Before payment — inactive
         assert!(!client.check_access(&meter_id));
@@ -207,7 +269,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER2");
 
-        client.register_meter(&meter_id, &user);
+        allowlist_and_register(&client, &meter_id, &user);
         // Second registration with the same id must panic
         client.register_meter(&meter_id, &user);
     }
@@ -221,7 +283,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER3");
 
-        client.register_meter(&meter_id, &user);
+        allowlist_and_register(&client, &meter_id, &user);
         client.make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily);
     }
 
@@ -234,7 +296,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER4");
 
-        client.register_meter(&meter_id, &user);
+        allowlist_and_register(&client, &meter_id, &user);
         client.make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily);
     }
 
@@ -246,7 +308,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER5");
 
-        client.register_meter(&meter_id, &user);
+        allowlist_and_register(&client, &meter_id, &user);
         client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::UsageBased);
 
         // Partial drain — meter stays active
@@ -280,6 +342,7 @@ mod tests {
         // Initialize with real admin (mock all for setup only)
         env.mock_all_auths();
         client.initialize(&admin);
+        client.allowlist_add(&non_admin);
         client.register_meter(&meter_id, &non_admin);
         client.make_payment(&meter_id, &non_admin, &1_000_000_i128, &PaymentPlan::Daily);
 
@@ -302,7 +365,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER7");
 
-        client.register_meter(&meter_id, &user);
+        allowlist_and_register(&client, &meter_id, &user);
 
         // Newly registered meter: active=false, balance=0
         assert!(!client.check_access(&meter_id));
@@ -317,5 +380,55 @@ mod tests {
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.balance, 0);
         assert!(!meter.active);
+    }
+
+    /// Registering an owner not on the allowlist must panic.
+    #[test]
+    #[should_panic(expected = "owner not in allowlist")]
+    fn test_register_meter_owner_not_allowlisted_panics() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METER8");
+        // Deliberately skip allowlist_add
+        client.register_meter(&meter_id, &user);
+    }
+
+    /// allowlist_add / allowlist_remove round-trip.
+    #[test]
+    fn test_allowlist_add_remove() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+
+        assert!(!client.get_allowlist().contains(&user));
+
+        client.allowlist_add(&user);
+        assert!(client.get_allowlist().contains(&user));
+
+        client.allowlist_remove(&user);
+        assert!(!client.get_allowlist().contains(&user));
+    }
+
+    /// Adding the same address twice should not duplicate it.
+    #[test]
+    fn test_allowlist_no_duplicates() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+
+        client.allowlist_add(&user);
+        client.allowlist_add(&user);
+
+        let list = client.get_allowlist();
+        let count = list.iter().filter(|a| a == user).count();
+        assert_eq!(count, 1);
+    }
+
+    /// Removing an address that was never added is a no-op.
+    #[test]
+    fn test_allowlist_remove_nonexistent_is_noop() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        // Should not panic
+        client.allowlist_remove(&user);
+        assert!(!client.get_allowlist().contains(&user));
     }
 }
