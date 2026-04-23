@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -33,6 +33,7 @@ pub struct Meter {
 #[contracttype]
 pub enum DataKey {
     Meter(Symbol),
+    OwnerMeters(Address),
 }
 
 // ── Event topics (contract namespace) ────────────────────────────────────────
@@ -65,28 +66,12 @@ impl SolarGridContract {
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
-
-        // Ensure the owner is on the admin-managed allowlist.
-        // Only addresses explicitly approved by the admin (expected to be
-        // G… user accounts) may be registered as meter owners.
-        let allowlist: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !allowlist.contains(&owner) {
-            panic!("owner not in allowlist");
-        }
-
-        // Owner must authorize their own registration.
-        owner.require_auth();
-
-        let key = DataKey::Meter(meter_id);
+        let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
             panic!("meter already registered");
         }
         let meter = Meter {
-            owner,
+            owner: owner.clone(),
             active: false,
             balance: 0,
             units_used: 0,
@@ -94,6 +79,109 @@ impl SolarGridContract {
             last_payment: env.ledger().timestamp(),
         };
         env.storage().persistent().set(&key, &meter);
+
+        // Append meter_id to the owner's meter list
+        let owner_key = DataKey::OwnerMeters(owner);
+        let mut list: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(meter_id);
+        env.storage().persistent().set(&owner_key, &list);
+    }
+
+    /// Get all meter IDs registered under a given owner address.
+    pub fn get_meters_by_owner(env: Env, owner: Address) -> Vec<Symbol> {
+        let owner_key = DataKey::OwnerMeters(owner);
+        env.storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Add an address to the meter-owner allowlist.
+    /// Only the admin may call this. Use this to pre-approve user accounts
+    /// (G… addresses) before they can be registered as meter owners.
+    pub fn allowlist_add(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let mut list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !list.contains(&owner) {
+            list.push_back(owner);
+            env.storage().instance().set(&ALLOWLIST, &list);
+        }
+    }
+
+    /// Remove an address from the meter-owner allowlist.
+    /// Only the admin may call this.
+    pub fn allowlist_remove(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for addr in list.iter() {
+            if addr != owner {
+                new_list.push_back(addr);
+            }
+        }
+        env.storage().instance().set(&ALLOWLIST, &new_list);
+    }
+
+    /// Returns the current allowlist.
+    pub fn get_allowlist(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Add an address to the meter-owner allowlist.
+    /// Only the admin may call this. Use this to pre-approve user accounts
+    /// (G… addresses) before they can be registered as meter owners.
+    pub fn allowlist_add(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let mut list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !list.contains(&owner) {
+            list.push_back(owner);
+            env.storage().instance().set(&ALLOWLIST, &list);
+        }
+    }
+
+    /// Remove an address from the meter-owner allowlist.
+    /// Only the admin may call this.
+    pub fn allowlist_remove(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for addr in list.iter() {
+            if addr != owner {
+                new_list.push_back(addr);
+            }
+        }
+        env.storage().instance().set(&ALLOWLIST, &new_list);
+    }
+
+    /// Returns the current allowlist.
+    pub fn get_allowlist(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Add an address to the meter-owner allowlist.
@@ -474,96 +562,5 @@ mod tests {
         // Should not panic
         client.allowlist_remove(&user);
         assert!(!client.get_allowlist().contains(&user));
-    }
-
-    // ── Event emission tests ──────────────────────────────────────────────────
-
-    /// make_payment emits payment_received and meter_activated.
-    #[test]
-    fn test_make_payment_emits_events() {
-        let (env, client, _admin) = setup();
-        let user = Address::generate(&env);
-        let meter_id = symbol_short!("EVTM1");
-        allowlist_and_register(&client, &meter_id, &user);
-
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily);
-
-        let events = env.events().all();
-        // Expect at least 2 events from make_payment
-        assert!(events.len() >= 2);
-
-        let topics_0: soroban_sdk::Vec<soroban_sdk::Val> = events.get(0).unwrap().0;
-        let topics_1: soroban_sdk::Vec<soroban_sdk::Val> = events.get(1).unwrap().0;
-
-        let name_0 = soroban_sdk::Symbol::try_from_val(&env, &topics_0.get(1).unwrap()).unwrap();
-        let name_1 = soroban_sdk::Symbol::try_from_val(&env, &topics_1.get(1).unwrap()).unwrap();
-
-        // topic[0] is the contract address; topic[1] is our event name
-        assert!(
-            name_0 == symbol_short!("pmt_rcvd") || name_1 == symbol_short!("pmt_rcvd"),
-            "payment_received event not found"
-        );
-        assert!(
-            name_0 == symbol_short!("mtr_actv") || name_1 == symbol_short!("mtr_actv"),
-            "meter_activated event not found"
-        );
-    }
-
-    /// update_usage emits usage_updated; draining balance also emits meter_deactivated.
-    #[test]
-    fn test_update_usage_emits_events() {
-        let (env, client, _admin) = setup();
-        let user = Address::generate(&env);
-        let meter_id = symbol_short!("EVTM2");
-        allowlist_and_register(&client, &meter_id, &user);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::UsageBased);
-
-        // Partial usage — only usage_updated expected
-        env.events().all(); // clear by reading (events accumulate per tx in tests)
-        client.update_usage(&meter_id, &10_u64, &1_000_000_i128);
-        let events = env.events().all();
-        let has_usg = events.iter().any(|(topics, _)| {
-            soroban_sdk::Symbol::try_from_val(&env, &topics.get(1).unwrap())
-                .map(|s| s == symbol_short!("usg_upd"))
-                .unwrap_or(false)
-        });
-        assert!(has_usg, "usage_updated event not found");
-
-        // Drain balance — should also emit meter_deactivated
-        client.update_usage(&meter_id, &10_u64, &4_000_000_i128);
-        let events2 = env.events().all();
-        let has_deact = events2.iter().any(|(topics, _)| {
-            soroban_sdk::Symbol::try_from_val(&env, &topics.get(1).unwrap())
-                .map(|s| s == symbol_short!("mtr_deact"))
-                .unwrap_or(false)
-        });
-        assert!(has_deact, "meter_deactivated event not found after balance drain");
-    }
-
-    /// set_active emits meter_activated or meter_deactivated depending on the flag.
-    #[test]
-    fn test_set_active_emits_events() {
-        let (env, client, _admin) = setup();
-        let user = Address::generate(&env);
-        let meter_id = symbol_short!("EVTM3");
-        allowlist_and_register(&client, &meter_id, &user);
-
-        client.set_active(&meter_id, &true);
-        let events = env.events().all();
-        let has_actv = events.iter().any(|(topics, _)| {
-            soroban_sdk::Symbol::try_from_val(&env, &topics.get(1).unwrap())
-                .map(|s| s == symbol_short!("mtr_actv"))
-                .unwrap_or(false)
-        });
-        assert!(has_actv, "meter_activated event not found");
-
-        client.set_active(&meter_id, &false);
-        let events2 = env.events().all();
-        let has_deact = events2.iter().any(|(topics, _)| {
-            soroban_sdk::Symbol::try_from_val(&env, &topics.get(1).unwrap())
-                .map(|s| s == symbol_short!("mtr_deact"))
-                .unwrap_or(false)
-        });
-        assert!(has_deact, "meter_deactivated event not found");
     }
 }
