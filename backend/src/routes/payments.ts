@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { server, CONTRACT_ID, NETWORK_PASSPHRASE } from "../lib/stellar.js";
+import { logger } from "../lib/logger.js";
 
 export const paymentsRouter = Router();
 
@@ -48,7 +49,7 @@ paymentsRouter.get("/:address", async (req, res) => {
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
   } catch (err: any) {
-    console.error("payments route error:", err);
+    logger.error("payments route error", { err });
     return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
   }
 });

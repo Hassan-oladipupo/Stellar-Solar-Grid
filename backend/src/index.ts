@@ -4,6 +4,7 @@ import { meterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { startIoTBridge } from "./iot/bridge.js";
+import { logger } from "./lib/logger.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -22,6 +23,11 @@ app.use((_, res, next) => {
   next();
 });
 
+app.use((req, _res, next) => {
+  logger.info({ method: req.method, path: req.path });
+  next();
+});
+
 app.use("/api/meters", meterRouter);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
@@ -29,6 +35,6 @@ app.use("/api/webhooks", webhookRouter);
 app.get("/health", (_, res) => res.json({ status: "ok" }));
 
 app.listen(PORT, () => {
-  console.log(`🌞 SolarGrid backend running on port ${PORT}`);
+  logger.info(`SolarGrid backend running on port ${PORT}`);
   startIoTBridge();
 });

@@ -8,6 +8,7 @@
 
 import mqtt from "mqtt";
 import { adminInvoke } from "../lib/stellar.js";
+import { logger } from "../lib/logger.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
@@ -17,15 +18,14 @@ export function startIoTBridge() {
   const client = mqtt.connect(BROKER);
 
   client.on("connect", () => {
-    console.log(`📡 IoT bridge connected to ${BROKER}`);
+    logger.info(`IoT bridge connected to ${BROKER}`);
     client.subscribe(TOPIC, (err) => {
-      if (err) console.error("MQTT subscribe error:", err);
+      if (err) logger.error("MQTT subscribe error", { err });
     });
   });
 
   client.on("message", async (topic, payload) => {
     try {
-      // Extract meter_id from topic: solargrid/meters/{meter_id}/usage
       const parts = topic.split("/");
       const meterId = parts[2];
       const { units, cost } = JSON.parse(payload.toString()) as {
@@ -33,7 +33,7 @@ export function startIoTBridge() {
         cost: number;
       };
 
-      console.log(`⚡ Usage update — meter: ${meterId}, units: ${units}, cost: ${cost}`);
+      logger.info("Usage update", { meterId, units, cost });
 
       const hash = await adminInvoke("update_usage", [
         StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
@@ -41,14 +41,13 @@ export function startIoTBridge() {
         StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
       ]);
 
-      console.log(`✅ Usage recorded on-chain: ${hash}`);
+      logger.info("Usage recorded on-chain", { hash });
     } catch (err) {
-      console.error("IoT bridge error:", err);
+      logger.error("IoT bridge error", { err });
     }
   });
 
   client.on("error", (err) => {
-    // Non-fatal — bridge will retry on reconnect
-    console.warn("MQTT connection error (will retry):", err.message);
+    logger.warn("MQTT connection error (will retry)", { message: err.message });
   });
 }
