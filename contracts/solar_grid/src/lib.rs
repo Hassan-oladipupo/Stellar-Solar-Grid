@@ -1,8 +1,16 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, vec, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, contracterror, symbol_short, token, vec, Address, Env, Symbol, Vec,
 };
+
+// ── Error types ───────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContractError {
+    NotInitialized = 1,
+}
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -176,6 +184,7 @@ impl SolarGridContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
+        Self::require_initialized(&env);
         let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
@@ -199,7 +208,7 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         // Track provider (admin) accrued revenue in contract storage.
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         let provider_key = DataKey::ProviderRevenue(admin);
         let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
         env.storage()
@@ -238,7 +247,8 @@ impl SolarGridContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+        Self::require_initialized(&env);
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         if provider != admin {
             panic!("provider is not admin");
         }
@@ -346,8 +356,15 @@ impl SolarGridContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    fn require_initialized(env: &Env) {
+        if !env.storage().instance().has(&ADMIN) {
+            env.panic_with_error(ContractError::NotInitialized);
+        }
+    }
+
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+        Self::require_initialized(env);
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         admin.require_auth();
     }
 }
@@ -897,5 +914,56 @@ mod tests {
                 && topics.get(1).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
         });
         assert!(has_actv, "mtr_actv event not emitted by set_active(true)");
+    }
+
+    // ── Uninitialized guard tests ─────────────────────────────────────────────
+
+    fn uninitialized_client() -> (Env, SolarGridContractClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        (env, client)
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_register_meter_uninitialized_panics() {
+        let (env, client) = uninitialized_client();
+        let user = Address::generate(&env);
+        client.register_meter(&symbol_short!("M1"), &user);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_make_payment_uninitialized_panics() {
+        let (env, client) = uninitialized_client();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+        let user = Address::generate(&env);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&symbol_short!("M1"), &token_address, &user, &1_000_i128, &PaymentPlan::Daily);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_active_uninitialized_panics() {
+        let (env, client) = uninitialized_client();
+        client.set_active(&symbol_short!("M1"), &true);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_update_usage_uninitialized_panics() {
+        let (env, client) = uninitialized_client();
+        client.update_usage(&symbol_short!("M1"), &1_u64, &100_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_withdraw_revenue_uninitialized_panics() {
+        let (env, client) = uninitialized_client();
+        let (token_address, _, _) = setup_token(&env);
+        let provider = Address::generate(&env);
+        client.withdraw_revenue(&token_address, &provider, &1_i128);
     }
 }
