@@ -310,6 +310,37 @@ impl SolarGridContract {
         }
     }
 
+    /// Batch-update usage for multiple meters in a single transaction.
+    /// Each tuple is `(meter_id, units, cost)`. Meters not found are silently skipped.
+    /// Admin-only.
+    pub fn batch_update_usage(env: Env, updates: Vec<(Symbol, u64, i128)>) {
+        Self::require_admin(&env);
+        for (meter_id, units, cost) in updates.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            if let Some(mut meter) = env.storage().persistent().get::<DataKey, Meter>(&key) {
+                meter.units_used += units;
+                meter.balance = meter.balance.checked_sub(cost).unwrap_or(0).max(0);
+                let deactivated = if meter.balance == 0 {
+                    meter.active = false;
+                    true
+                } else {
+                    false
+                };
+                env.storage().persistent().set(&key, &meter);
+                env.events().publish(
+                    (symbol_short!("usg_upd"), EVT_NS, meter_id.clone()),
+                    (units, cost),
+                );
+                if deactivated {
+                    env.events().publish(
+                        (symbol_short!("mtr_deact"), EVT_NS, meter_id),
+                        (),
+                    );
+                }
+            }
+        }
+    }
+
     /// Get meter details.
     pub fn get_meter(env: Env, meter_id: Symbol) -> Meter {
         let key = DataKey::Meter(meter_id);
@@ -870,6 +901,45 @@ mod tests {
             topics.get(0) == Some(symbol_short!("mtr_deact").into())
         });
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
+    }
+
+    /// batch_update_usage updates 3 meters atomically in one call.
+    #[test]
+    fn test_batch_update_usage() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+
+        let user = Address::generate(&env);
+        let ids = [symbol_short!("B_MTR1"), symbol_short!("B_MTR2"), symbol_short!("B_MTR3")];
+
+        for id in &ids {
+            allowlist_and_register(&client, id, &user);
+            token_admin_client.mint(&user, &10_000_i128);
+            client.make_payment(id, &token_address, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        }
+
+        let updates: Vec<(Symbol, u64, i128)> = vec![
+            &env,
+            (ids[0].clone(), 10_u64, 3_000_i128),
+            (ids[1].clone(), 20_u64, 5_000_i128),
+            (ids[2].clone(), 30_u64, 10_000_i128), // drains balance → deactivated
+        ];
+        client.batch_update_usage(&updates);
+
+        let m0 = client.get_meter(&ids[0]);
+        assert_eq!(m0.units_used, 10);
+        assert_eq!(m0.balance, 7_000);
+        assert!(m0.active);
+
+        let m1 = client.get_meter(&ids[1]);
+        assert_eq!(m1.units_used, 20);
+        assert_eq!(m1.balance, 5_000);
+        assert!(m1.active);
+
+        let m2 = client.get_meter(&ids[2]);
+        assert_eq!(m2.units_used, 30);
+        assert_eq!(m2.balance, 0);
+        assert!(!m2.active);
     }
 
     #[test]
