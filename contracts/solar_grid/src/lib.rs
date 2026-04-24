@@ -1,8 +1,16 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, vec, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, contracterror, symbol_short, token, vec, Address, Env, Symbol, Vec,
 };
+
+// ── Error types ───────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ContractError {
+    NotInitialized = 1,
+}
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -238,7 +246,8 @@ impl SolarGridContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+        Self::require_initialized(&env);
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         if provider != admin {
             panic!("provider is not admin");
         }
@@ -411,8 +420,15 @@ impl SolarGridContract {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    fn require_initialized(env: &Env) {
+        if !env.storage().instance().has(&ADMIN) {
+            env.panic_with_error(ContractError::NotInitialized);
+        }
+    }
+
     fn require_admin(env: &Env) {
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
+        Self::require_initialized(env);
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         admin.require_auth();
     }
 }
