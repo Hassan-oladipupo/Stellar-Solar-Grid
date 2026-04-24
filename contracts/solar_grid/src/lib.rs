@@ -589,6 +589,74 @@ mod tests {
         assert!(!client.check_access(&meter_id));
     }
 
+    /// Weekly plan should auto-expire after 7 days even with remaining balance.
+    #[test]
+    fn test_check_access_false_when_weekly_plan_expired() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("WK_EXP");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &5_000_000_i128);
+        client.make_payment(&meter_id, &token_address, &user, &5_000_000_i128, &PaymentPlan::Weekly);
+        assert!(client.check_access(&meter_id));
+
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.expires_at - meter.last_payment, SECONDS_PER_WEEK);
+
+        env.ledger().with_mut(|li| li.timestamp = meter.expires_at);
+        assert!(!client.check_access(&meter_id));
+    }
+
+    /// UsageBased plan never expires by time — only balance gates access.
+    #[test]
+    fn test_usage_based_plan_never_expires_by_time() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("UB_EXP");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &token_address, &user, &1_000_i128, &PaymentPlan::UsageBased);
+
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.expires_at, u64::MAX);
+
+        // Far future — still active because balance > 0 and expires_at = u64::MAX
+        env.ledger().with_mut(|li| li.timestamp = u64::MAX - 1);
+        assert!(client.check_access(&meter_id));
+    }
+
+    /// Renewal (top-up) after expiry resets expires_at and restores access.
+    #[test]
+    fn test_renewal_resets_expiry_and_restores_access() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("RENEW");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &4_000_000_i128);
+        client.make_payment(&meter_id, &token_address, &user, &2_000_000_i128, &PaymentPlan::Daily);
+
+        let meter = client.get_meter(&meter_id);
+        // Advance past expiry
+        env.ledger().with_mut(|li| li.timestamp = meter.expires_at);
+        assert!(!client.check_access(&meter_id));
+
+        // Top-up renews the plan from the new timestamp
+        client.make_payment(&meter_id, &token_address, &user, &2_000_000_i128, &PaymentPlan::Daily);
+        assert!(client.check_access(&meter_id));
+
+        let renewed = client.get_meter(&meter_id);
+        assert!(renewed.expires_at > meter.expires_at);
+    }
+
     /// Registering an owner not on the allowlist must panic.
     #[test]
     #[should_panic(expected = "owner not in allowlist")]
