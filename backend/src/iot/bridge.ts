@@ -2,6 +2,9 @@
  * IoT Bridge — subscribes to MQTT topics published by smart meters
  * and forwards usage data to the Soroban contract via the admin keypair.
  *
+ * Readings are buffered per flush interval and submitted as a single
+ * batch_update_usage call to minimise transaction overhead.
+ *
  * Expected MQTT topic:  solargrid/meters/{meter_id}/usage
  * Expected payload:     { "units": 100, "cost": 500000 }
  *
@@ -15,33 +18,43 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
-const BATCH_INTERVAL_MS = Number(process.env.BATCH_INTERVAL_MS ?? 5_000);
+const FLUSH_INTERVAL_MS = Number(process.env.BATCH_FLUSH_MS ?? 5_000);
 
-type Update = { meterId: string; units: number; cost: number };
-let pending: Update[] = [];
+interface Reading {
+  meterId: string;
+  units: number;
+  cost: number;
+}
 
-async function flushBatch() {
-  if (pending.length === 0) return;
-  const batch = pending.splice(0);
-
-  try {
-    const updates = StellarSdk.nativeToScVal(
-      batch.map(({ meterId, units, cost }) => [
-        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-        StellarSdk.nativeToScVal(BigInt(units), { type: "u64" }),
-        StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
-      ])
-    );
-
-    const hash = await adminInvoke("batch_update_usage", [updates]);
-    console.log(`✅ Batch of ${batch.length} meter(s) recorded on-chain: ${hash}`);
-  } catch (err: unknown) {
-    console.error("IoT bridge batch flush error:", err instanceof Error ? err.message : String(err));
-  }
+/** Encode a batch of readings as a Soroban Vec<(Symbol, u64, i128)>. */
+function encodeBatch(readings: Reading[]): StellarSdk.xdr.ScVal {
+  const entries = readings.map(({ meterId, units, cost }) =>
+    StellarSdk.xdr.ScVal.scvVec([
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      StellarSdk.nativeToScVal(BigInt(units), { type: "u64" }),
+      StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
+    ])
+  );
+  return StellarSdk.xdr.ScVal.scvVec(entries);
 }
 
 export function startIoTBridge() {
   const client = mqtt.connect(BROKER);
+  let pending: Reading[] = [];
+
+  const flush = async () => {
+    if (pending.length === 0) return;
+    const batch = pending.splice(0);
+    console.log(`📦 Flushing batch of ${batch.length} meter update(s)`);
+    try {
+      const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
+      console.log(`✅ Batch recorded on-chain: ${hash}`);
+    } catch (err) {
+      console.error("Batch submission error:", err);
+    }
+  };
+
+  setInterval(flush, FLUSH_INTERVAL_MS);
 
   setInterval(flushBatch, BATCH_INTERVAL_MS);
 
@@ -54,16 +67,14 @@ export function startIoTBridge() {
 
   client.on("message", (topic, payload) => {
     try {
-      const parts = topic.split("/");
-      const meterId = parts[2];
+      const meterId = topic.split("/")[2];
       const { units, cost } = JSON.parse(payload.toString()) as {
         units: number;
         cost: number;
       };
-      console.log(`⚡ Queued — meter: ${meterId}, units: ${units}, cost: ${cost}`);
       pending.push({ meterId, units, cost });
-    } catch (err: unknown) {
-      console.error("IoT bridge parse error:", err instanceof Error ? err.message : String(err));
+    } catch (err) {
+      console.error("IoT bridge parse error:", err);
     }
   });
 
