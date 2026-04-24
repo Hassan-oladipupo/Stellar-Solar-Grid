@@ -287,9 +287,7 @@ impl SolarGridContract {
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         meter.units_used += units;
-        // Clamp to 0: saturating_sub on i128 would bottom out at i128::MIN on
-        // underflow; .max(0) normalises any negative result to exactly 0.
-        meter.balance = meter.balance.saturating_sub(cost).max(0);
+        meter.balance = meter.balance.checked_sub(cost).unwrap_or(0).max(0);
         let deactivated = if meter.balance == 0 {
             meter.active = false;
             true
