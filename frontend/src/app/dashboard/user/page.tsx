@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { SkeletonCard } from "@/components/SkeletonCard";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
@@ -182,9 +183,9 @@ export default function UserDashboardPage() {
 
         {/* Loading skeleton */}
         {address && loading && meterIds.length === 0 && (
-          <div className="space-y-4 animate-pulse">
+          <div className="space-y-4">
             {[0, 1].map((i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-solar-accent p-5 h-36" />
+              <SkeletonCard key={i} height={160} />
             ))}
           </div>
         )}
@@ -203,7 +204,7 @@ export default function UserDashboardPage() {
               meters[id] ? (
                 <MeterCard key={id} meterId={id} meter={meters[id]} />
               ) : (
-                <div key={id} className="rounded-xl border border-white/10 bg-solar-accent p-5 h-36 animate-pulse" />
+                <SkeletonCard key={id} height={160} />
               )
             )}
           </div>
