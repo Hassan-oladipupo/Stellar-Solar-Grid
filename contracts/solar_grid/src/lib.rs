@@ -95,7 +95,7 @@ pub struct SolarGridContract;
 impl SolarGridContract {
     /// Initialize the contract with an admin address and the SAC token address.
     pub fn initialize(env: Env, admin: Address, token_address: Address) {
-        admin.require_auth();
+        env.deployer().require_auth();
         if env.storage().instance().has(&ADMIN) {
             panic!("already initialized");
         }
@@ -382,6 +382,9 @@ impl SolarGridContract {
     /// - `batch_skip { meter_id }`
     pub fn batch_update_usage(env: Env, updates: Vec<(Symbol, u64, i128)>) {
         Self::require_oracle(&env);
+        if updates.len() > 50 {
+            panic!("batch too large");
+        }
         for (meter_id, units, cost) in updates.iter() {
             let key = DataKey::Meter(meter_id.clone());
             let meter_opt: Option<Meter> = env.storage().persistent().get(&key);
