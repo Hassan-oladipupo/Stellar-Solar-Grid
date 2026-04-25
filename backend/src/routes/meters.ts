@@ -104,10 +104,8 @@ meterRouter.post(
     // Decrement active meters gauge when cost drains balance (best-effort)
     activeMeters.dec();
     res.json({ hash });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
+  }),
+);
 
 const TTL_MS = 24 * 60 * 60 * 1_000; // 24 hours
 const idempotencyCache = new Map<string, { hash: string; timestamp: number }>();
@@ -118,28 +116,29 @@ const idempotencyCache = new Map<string, { hash: string; timestamp: number }>();
  * Body: { token_address, payer, amount_stroops, plan }
  * Header: Idempotency-Key: <uuid>  (optional — duplicate within 24 h returns cached txHash)
  */
-meterRouter.post("/:id/pay", async (req, res) => {
-  const ikey = req.headers["idempotency-key"] as string | undefined;
+meterRouter.post(
+  "/:id/pay",
+  asyncHandler(async (req, res) => {
+    const ikey = req.headers["idempotency-key"] as string | undefined;
 
-  if (ikey) {
-    const cached = idempotencyCache.get(ikey);
-    if (cached && Date.now() - cached.timestamp < TTL_MS) {
-      return res.json({ hash: cached.hash });
+    if (ikey) {
+      const cached = idempotencyCache.get(ikey);
+      if (cached && Date.now() - cached.timestamp < TTL_MS) {
+        return res.json({ hash: cached.hash });
+      }
     }
-  }
 
-  const { token_address, payer, amount_stroops, plan } = req.body as {
-    token_address: string;
-    payer: string;
-    amount_stroops: number;
-    plan: string;
-  };
+    const { token_address, payer, amount_stroops, plan } = req.body as {
+      token_address: string;
+      payer: string;
+      amount_stroops: number;
+      plan: string;
+    };
 
-  if (!token_address || !payer || amount_stroops == null || !plan) {
-    return res.status(400).json({ error: "token_address, payer, amount_stroops, and plan are required" });
-  }
+    if (!token_address || !payer || amount_stroops == null || !plan) {
+      return res.status(400).json({ error: "token_address, payer, amount_stroops, and plan are required" });
+    }
 
-  try {
     const hash = await adminInvoke("make_payment", [
       StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
       StellarSdk.nativeToScVal(token_address, { type: "address" }),
