@@ -7,9 +7,6 @@
  *
  * Expected MQTT topic:  solargrid/meters/{meter_id}/usage
  * Expected payload:     { "units": 100, "cost": 500000 }
- *
- * Readings are buffered for BATCH_INTERVAL_MS and flushed as a single
- * batch_update_usage call to reduce on-chain transaction fees.
  */
 
 import mqtt from "mqtt";
@@ -47,18 +44,16 @@ export function startIoTBridge() {
   const flush = async () => {
     if (pending.length === 0) return;
     const batch = pending.splice(0);
-    console.log(`📦 Flushing batch of ${batch.length} meter update(s)`);
+    logger.info(`Flushing batch of ${batch.length} meter update(s)`);
     try {
       const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
-      console.log(`✅ Batch recorded on-chain: ${hash}`);
+      logger.info(`Batch recorded on-chain: ${hash}`);
     } catch (err) {
-      console.error("Batch submission error:", err);
+      logger.error("Batch submission error", { err });
     }
   };
 
   setInterval(flush, FLUSH_INTERVAL_MS);
-
-  setInterval(flushBatch, BATCH_INTERVAL_MS);
 
   client.on("connect", () => {
     logger.info(`IoT bridge connected to ${BROKER}`);
@@ -67,16 +62,8 @@ export function startIoTBridge() {
     });
   });
 
-  client.on("message", async (topic, payload) => {
-    mqttMessages.inc();
-    try {
-      const parts = topic.split("/");
-      const meterId = parts[2];
-      if (err) console.error("MQTT subscribe error:", err instanceof Error ? err.message : String(err));
-    });
-  });
-
   client.on("message", (topic, payload) => {
+    mqttMessages.inc();
     try {
       const meterId = topic.split("/")[2];
       const { units, cost } = JSON.parse(payload.toString()) as {
@@ -85,24 +72,13 @@ export function startIoTBridge() {
       };
 
       logger.info("Usage update", { meterId, units, cost });
-
-      const hash = await adminInvoke("update_usage", [
-        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-        StellarSdk.nativeToScVal(BigInt(units), { type: "u64" }),
-        StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
-      ]);
-
-      logger.info("Usage recorded on-chain", { hash });
-    } catch (err) {
-      logger.error("IoT bridge error", { err });
       pending.push({ meterId, units, cost });
     } catch (err) {
-      console.error("IoT bridge parse error:", err);
+      logger.error("IoT bridge parse error", { err });
     }
   });
 
   client.on("error", (err) => {
     logger.warn("MQTT connection error (will retry)", { message: err.message });
-    console.warn("MQTT connection error (will retry):", err.message);
   });
 }
