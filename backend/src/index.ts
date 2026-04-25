@@ -42,7 +42,7 @@ app.get("/metrics", async (_req, res) => {
 });
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error(err);
+  logger.error("Request error", { error: err.message });
 
   const parseError = err as Error & {
     type?: string;

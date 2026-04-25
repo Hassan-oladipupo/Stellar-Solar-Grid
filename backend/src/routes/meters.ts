@@ -107,12 +107,12 @@ meterRouter.post("/:id/pay", asyncHandler(async (req, res) => {
 
   const ikey = req.headers["idempotency-key"] as string | undefined;
 
-  if (ikey) {
-    const cached = idempotencyCache.get(ikey);
-    if (cached && Date.now() - cached.timestamp < TTL_MS) {
-      return res.json({ hash: cached.hash });
+    if (ikey) {
+      const cached = idempotencyCache.get(ikey);
+      if (cached && Date.now() - cached.timestamp < TTL_MS) {
+        return res.json({ hash: cached.hash });
+      }
     }
-  }
 
   const { token_address, payer, amount_stroops, plan } = validation.data;
 
