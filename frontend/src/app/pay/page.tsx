@@ -5,6 +5,7 @@ import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
 import { useWalletStore } from "@/store/walletStore";
+import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
 import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
@@ -20,11 +21,10 @@ const PLANS: { value: Plan; label: string; desc: string }[] = [
 
 export default function PayPage() {
   const { address, connect } = useWalletStore();
+  const { meterId, plan, setMeterId, setPlan } = usePaymentStore();
   const isOffline = useOffline();
 
-  const [meterId, setMeterId]     = useState("");
   const [amount, setAmount]       = useState("");
-  const [plan, setPlan]           = useState<Plan>("Daily");
   const [status, setStatus]       = useState<Status>("idle");
   const [message, setMessage]     = useState("");
   const [txHash, setTxHash]       = useState("");
@@ -72,7 +72,7 @@ export default function PayPage() {
         <div className="bg-yellow-900/30 border-b border-yellow-500/30 px-4 py-2.5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-yellow-300 text-xs">
             <span>📵</span>
-            <span>You're offline — blockchain payments unavailable.</span>
+            <span>You&apos;re offline — blockchain payments unavailable.</span>
           </div>
           <button
             onClick={() => setShowSmsModal(true)}
@@ -157,7 +157,7 @@ export default function PayPage() {
                 <input
                   type="text"
                   value={meterId}
-                  onChange={(e) => { setMeterId(e.target.value); reset(); }}
+                  onChange={(e) => setMeterId(e.target.value)}
                   placeholder="e.g. METER1"
                   required
                   className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"

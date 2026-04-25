@@ -7,9 +7,6 @@
  *
  * Expected MQTT topic:  solargrid/meters/{meter_id}/usage
  * Expected payload:     { "units": 100, "cost": 500000 }
- *
- * Readings are buffered for BATCH_INTERVAL_MS and flushed as a single
- * batch_update_usage call to reduce on-chain transaction fees.
  */
 
 import mqtt from "mqtt";
@@ -52,7 +49,7 @@ export function startIoTBridge() {
       const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
       logger.info(`Batch recorded on-chain: ${hash}`);
     } catch (err) {
-      logger.error("Batch submission error", { error: err instanceof Error ? err.message : String(err) });
+      logger.error("Batch submission error", { err });
     }
   };
 
@@ -61,7 +58,7 @@ export function startIoTBridge() {
   client.on("connect", () => {
     logger.info(`IoT bridge connected to ${BROKER}`);
     client.subscribe(TOPIC, (err) => {
-      if (err) logger.error("MQTT subscribe error", { error: err instanceof Error ? err.message : String(err) });
+      if (err) logger.error("MQTT subscribe error", { err });
     });
   });
 
@@ -77,7 +74,7 @@ export function startIoTBridge() {
       logger.info("Usage update", { meterId, units, cost });
       pending.push({ meterId, units, cost });
     } catch (err) {
-      logger.error("IoT bridge parse error", { error: err instanceof Error ? err.message : String(err) });
+      logger.error("IoT bridge parse error", { err });
     }
   });
 
