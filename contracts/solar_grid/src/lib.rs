@@ -21,6 +21,7 @@ const ADMIN: Symbol = symbol_short!("ADMIN");
 const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
 const TOKEN: Symbol = symbol_short!("TOKEN");
 const ORACLE: Symbol = symbol_short!("ORACLE");
+const METER_LIST: Symbol = symbol_short!("MLIST");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
 
@@ -144,6 +145,15 @@ impl SolarGridContract {
         list.push_back(meter_id.clone());
         env.storage().persistent().set(&owner_key, &list);
 
+        // Append meter_id to global meter registry
+        let mut global_list: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+        global_list.push_back(meter_id.clone());
+        env.storage().instance().set(&METER_LIST, &global_list);
+
         // meter_registered
         env.events().publish(
             (symbol_short!("mtr_reg"), EVT_NS, meter_id),
@@ -158,6 +168,26 @@ impl SolarGridContract {
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Get all registered meters (admin only).
+    /// Returns all Meter structs across the entire contract.
+    /// Used by provider dashboard to display all active meters.
+    pub fn get_all_meters(env: Env) -> Vec<Meter> {
+        Self::require_admin(&env);
+        let meter_ids: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+        let mut meters: Vec<Meter> = vec![&env];
+        for meter_id in meter_ids.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            if let Some(meter) = env.storage().persistent().get(&key) {
+                meters.push_back(meter);
+            }
+        }
+        meters
     }
 
     /// Add an address to the meter-owner allowlist.
@@ -1025,6 +1055,52 @@ mod tests {
         for id in &ids {
             assert!(meters.contains(id));
         }
+    }
+
+    /// get_all_meters returns all registered meters across all owners.
+    #[test]
+    fn test_get_all_meters_returns_all_registered() {
+        let (env, client, _admin) = setup();
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let ids = [
+            symbol_short!("ALL_1"), symbol_short!("ALL_2"), symbol_short!("ALL_3"),
+            symbol_short!("ALL_4"), symbol_short!("ALL_5"), symbol_short!("ALL_6"),
+            symbol_short!("ALL_7"), symbol_short!("ALL_8"), symbol_short!("ALL_9"),
+            symbol_short!("ALL_A"), symbol_short!("ALL_B"),
+        ];
+
+        client.allowlist_add(&user1);
+        client.allowlist_add(&user2);
+        for (i, id) in ids.iter().enumerate() {
+            let owner = if i < 6 { &user1 } else { &user2 };
+            client.register_meter(id, owner);
+        }
+
+        let all_meters = client.get_all_meters();
+        assert_eq!(all_meters.len(), 11);
+        for meter in all_meters.iter() {
+            assert!(!meter.active);
+            assert_eq!(meter.units_used, 0);
+        }
+    }
+
+    /// get_all_meters requires admin auth.
+    #[test]
+    #[should_panic(expected = "not authorized")]
+    fn test_get_all_meters_requires_admin() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        client.initialize(&admin, &token_address);
+        // Don't mock auth for this call
+        env.mock_all_auths_allowing_non_root_auth();
+        client.get_all_meters();
     }
 
     #[test]
