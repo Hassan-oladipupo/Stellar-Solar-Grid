@@ -896,7 +896,7 @@ mod tests {
 
     // ── Event emission tests ──────────────────────────────────────────────────
 
-    /// set_active(true) must panic when the meter has zero balance (#86).
+    /// set_active(true) must panic when the meter has zero balance (#166).
     #[test]
     #[should_panic(expected = "cannot activate meter with zero balance")]
     fn test_set_active_true_panics_when_balance_zero() {
@@ -905,6 +905,22 @@ mod tests {
         let meter_id = symbol_short!("ZERO_BAL");
         allowlist_and_register(&client, &meter_id, &user);
         client.set_active(&meter_id, &true);
+    }
+
+    /// set_active(true) succeeds when meter has positive balance.
+    #[test]
+    fn test_set_active_true_succeeds_with_positive_balance() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("POS_BAL");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.set_active(&meter_id, &false);
+        assert!(!client.get_meter(&meter_id).active);
+        client.set_active(&meter_id, &true);
+        assert!(client.get_meter(&meter_id).active);
     }
 
     #[test]
